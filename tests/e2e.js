@@ -54,7 +54,7 @@ const BOT = `(() => {
     const lost = await newPage(URL0);
     await lost.waitFor(`!!document.querySelector('#name')`, 20000, '首页加载');
     await lost.ev(`document.querySelector('#name').value='迷路';document.querySelector('#code').value='ZZ99';document.querySelector('[data-act=join]').click()`);
-    await lost.waitFor(`/找不到房间 ZZ99/.test((document.querySelector('.box .note')||{}).textContent||'')`, 30000, '“找不到房间”提示');
+    await lost.waitFor(`/找不到房间 ZZ99/.test((document.querySelector('.box .note')||{}).textContent||'')`, 45000, '“找不到房间”提示');
     console.log(`房间不存在时提示正常（${Date.now() - t0}ms）`);
     await lost.ev(`window.close()`);
     const host = await newPage(URL0); pages.push(host);
@@ -80,15 +80,25 @@ const BOT = `(() => {
     await host.ev(`document.querySelector('[data-act=start]').click()`);
     const t2 = Date.now(); let ended = 0, steps = 0;
     while (ended < N) {
-      if (Date.now() - t2 > 180000) throw new Error('一局 3 分钟没打完');
+      if (Date.now() - t2 > 240000) throw new Error('一局 4 分钟没打完');
       ended = 0;
-      for (const p of pages) { const r = await p.ev(BOT); if (r === 'END') ended++; else if (r) steps++; }
+      // 发给房主的操作之后等一会儿再点，像真人一样；本地选牌、选人不用等
+      const now = Date.now();
+      for (const p of pages) {
+        if (p.wait > now) { if (p.ended) ended++; continue; }
+        const r = await p.ev(BOT);
+        p.ended = r === 'END';
+        if (p.ended) ended++; else if (r) { steps++; if (/data-act=(ack|speechDone|giveCoin|magic|play|pass|swapPick|swapSkip|swapCard)\]/.test(r)) p.wait = now + 900; }
+      }
       await sleep(60);
     }
     console.log(`一局打完，共 ${steps} 次操作：`, await host.ev(`document.querySelector('#app .verdict').textContent+' — '+document.querySelector('#app .verdict').nextElementSibling.textContent`));
     ok = true;
   } catch (e) {
     console.log('失败：', e.message);
+    for (const [i, p] of pages.entries()) {
+      try { console.log(`[页面${i} 画面]`, await p.ev(`((document.querySelector('.main .panel')||document.querySelector('#overlay .modal')||document.querySelector('.box')||{}).innerText||'').replace(/\\s+/g,' ').slice(0,160)+' | toast='+document.querySelector('#toast').textContent`)); } catch (e2) {}
+    }
   } finally {
     pages.forEach((p, i) => { const bad = p.logs.filter(l => /EXCEPTION|error/i.test(l)); if (bad.length) console.log(`[页面${i}]`, bad.slice(0, 8).join('\n  ')); });
     chrome.kill();

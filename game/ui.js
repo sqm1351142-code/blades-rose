@@ -29,6 +29,7 @@
         ${S.status ? `<p class="note">${esc(S.status)}</p>` : ''}
       </div>
       <p class="note" style="text-align:center">发言请用你们自己的语音（微信 / 飞书 / Discord），网页只负责排顺序和计时。</p>
+      <p class="note dim" style="text-align:center">版本 4</p>
     </div>`;
   }
 
