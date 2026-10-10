@@ -1,0 +1,4 @@
+# 规则书图片和原型只留在本机，不公开
+rules/
+prototype.html
+node_modules/
