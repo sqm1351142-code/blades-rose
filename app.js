@@ -69,11 +69,20 @@
   const seatOf = pid => room.seats ? room.seats.indexOf(pid) : -1;
   function viewOf(pid) { return game ? E.viewFor(game, seatOf(pid)) : null; }
   function save() { store.set('host.' + room.code, { room, game }); }
+  // 公共中转服务器偶尔会丢消息，所以：状态带版本号，玩家定时核对；动作带编号，没收到回执就重发
+  let ver = 0, flushT = 0;
+  const lastAct = new Map(); // pid -> 最近处理过的动作编号
+  function sendState(conn, pub) {
+    const pid = connPid.get(conn.connectionId);
+    if (pid) S.net.send(conn, { t: 'state', v: ver, ack: lastAct.get(pid) || '', room: pub || pubRoom(), view: viewOf(pid) });
+  }
   function broadcast() {
+    ver++;
     save();
     const pub = pubRoom();
-    for (const c of S.net.conns()) { const pid = connPid.get(c.connectionId); if (pid) S.net.send(c, { t: 'state', room: pub, view: viewOf(pid) }); }
     applyView(pub, viewOf(S.pid));
+    // 连续几次变化合并成一次发送
+    if (!flushT) flushT = setTimeout(() => { flushT = 0; if (!S.net || !room) return; const p = pubRoom(); for (const c of S.net.conns()) sendState(c, p); }, 40);
   }
 
   function hostAct(pid, a) {
@@ -111,7 +120,13 @@
     }
     const pid = connPid.get(conn.connectionId);
     if (!pid) return;
-    if (msg.t === 'act') { const err = hostAct(pid, msg.a); if (err) S.net.send(conn, { t: 'err', msg: err }); }
+    if (msg.t === 'act') {
+      if (msg.id && lastAct.get(pid) === msg.id) return sendState(conn); // 重发的动作：只补发状态
+      const err = hostAct(pid, msg.a);
+      lastAct.set(pid, msg.id);
+      if (err) S.net.send(conn, { t: 'err', msg: err, ack: msg.id });
+    }
+    if (msg.t === 'sync' && msg.v !== ver) sendState(conn);
     if (msg.t === 'leave' && !game) { room.members = room.members.filter(x => x.pid !== pid); connPid.delete(conn.connectionId); broadcast(); }
   }
 
@@ -140,10 +155,9 @@
     const say = {
       signal: '第 1 步：正在连接联机服务…',
       find: `第 2 步：正在找房间 ${code}…`,
-      open: '已连上房主，正在进入房间…',
-      nosignal: '连不上联机服务（0.peerjs.com）。换个网络试试，比如关掉 VPN 或改用手机热点。正在重试…',
+      open: '已找到房主，正在进入房间…',
+      nosignal: '连不上联机服务。检查一下网络，或者换个网络（比如手机热点）再试。正在重试…',
       noroom: `找不到房间 ${code}。确认房间码没错，并且房主的页面还开着、显示“联机服务已连接”。正在重试…`,
-      blocked: '找到房主了，但两边的网络连不通（公司网、校园网、手机流量常见）。可以让两边连同一个 Wi-Fi 或同一个手机热点再试。正在重试…',
       unsupported: '这个浏览器不支持联机，请换 Chrome、Edge 或 Safari 打开。',
     };
     let failMsg = '';
@@ -160,9 +174,10 @@
         S.status = failMsg || say[s];
         render();
       },
-      onOpen(api) { api.send({ t: 'hello', pid: S.pid, name: S.name }); },
+      onOpen(api) { pending = null; api.send({ t: 'hello', pid: S.pid, name: S.name }); },
       onData(msg) {
-        if (msg.t === 'state') { S.status = ''; applyView(msg.room, msg.view); }
+        if (pending && msg.ack === pending.id) pending = null;
+        if (msg.t === 'state') { S.status = ''; S.ver = msg.v; applyView(msg.room, msg.view); }
         else if (msg.t === 'welcome') { if (msg.pid !== S.pid) { S.pid = msg.pid; tab.set('pid', msg.pid); } }
         else if (msg.t === 'err') toast(msg.msg);
         else if (msg.t === 'reject' || msg.t === 'kicked') { toast(msg.msg || '你被房主移出了房间'); leave(); }
@@ -171,13 +186,24 @@
     });
   }
 
+  let pending = null; // 玩家端：还没收到回执的动作
   function send(a) {
-    if (S.host) { const err = hostAct(S.pid, a); if (err) toast(err); }
-    else S.net && S.net.send({ t: 'act', a });
+    if (S.host) { const err = hostAct(S.pid, a); if (err) toast(err); return; }
+    if (!S.net) return;
+    pending = { id: rid(8), a, tries: 0 };
+    S.net.send({ t: 'act', id: pending.id, a });
   }
+  setInterval(() => {
+    if (S.host || !S.net) return;
+    // 进房间的那条消息丢了：再打一次招呼
+    if (!S.room) { if (S.link === 'open') S.net.send({ t: 'hello', pid: S.pid, name: S.name }); return; }
+    if (pending && ++pending.tries <= 6) S.net.send({ t: 'act', id: pending.id, a: pending.a });
+    else { pending = null; S.net.send({ t: 'sync', v: S.ver }); }
+  }, 2500);
 
   function leave() {
-    if (S.net) { if (!S.host) S.net.send({ t: 'leave' }); setTimeout(() => S.net && S.net.close(), 200); }
+    const net = S.net;
+    if (net) { if (!S.host) net.send({ t: 'leave' }); setTimeout(() => net.close(), 200); }
     if (S.host && room) store.del('host.' + room.code);
     tab.del('session');
     Object.assign(S, { host: false, room: null, view: null, net: null, status: '' });
@@ -282,7 +308,7 @@
   }, 500);
 
   /* ---------- 启动：恢复上次的房间 ---------- */
-  if (typeof Peer === 'undefined') { S.status = '联机组件没有加载出来，检查网络后刷新页面。'; render(); return; }
+  if (!Net.supported) { S.status = '这个浏览器不支持联机，请用 Chrome、Edge 或 Safari 打开 https 开头的网址。'; render(); return; }
   const sess = tab.get('session');
   const code = S.joinCode || (sess && sess.code);
   if (sess && sess.code === code && S.name) {
