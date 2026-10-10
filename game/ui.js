@@ -47,6 +47,9 @@
           <div class="row"><button class="btn" data-act="copy">复制邀请链接</button><button class="btn s" data-act="leave">离开</button></div>
         </div>
         <p class="note">把房间码或邀请链接发给朋友。座位顺序就是顺时针出牌顺序${S.host ? '，可以用 ↑ ↓ 调整' : '，由房主调整'}。</p>
+        ${!S.host ? '' : S.link === 'ready' ? '<p class="note w">联机服务已连接，朋友现在可以进来。</p>'
+          : S.link === 'nosignal' ? '<p class="note r">连不上联机服务，朋友现在进不来。换个网络（关掉 VPN 或改用手机热点）后刷新页面。正在重试…</p>'
+          : '<p class="note g">正在连接联机服务，连上之前朋友进不来…</p>'}
       </div>
       <div class="box">
         <h2>玩家 ${n} / 10</h2>

@@ -19,7 +19,7 @@
     name: store.get('name', ''),
     joinCode: (params.get('room') || '').toUpperCase(),
     status: '',
-    host: false, room: null, view: null, net: null,
+    host: false, room: null, view: null, net: null, link: '',
     online: [], recvAt: 0,
     ui: { picks: [], card: null, reveal: false, flash: false },
     seenReveal: -1, seen9: -1,
@@ -121,12 +121,14 @@
     game = restored ? restored.game : null;
     room.members.find(m => m.pid === S.pid).name = S.name;
     tab.set('session', { code, host: true });
-    S.status = '正在创建房间…';
+    if (S.net) S.net.close();
+    S.link = 'signal';
+    history.replaceState(null, '', '?room=' + code);
     S.net = Net.openHost(code, {
-      onOpen() { S.status = ''; broadcast(); history.replaceState(null, '', '?room=' + code); },
+      onStatus(s) { S.link = s; render(); },
       onData: onHostData,
       onClose(conn) { connPid.delete(conn.connectionId); broadcast(); },
-      onError(err) { toast('联机出错：' + (err.type || err)); },
+      onError(err) { toast('联机服务出错：' + (err.type || err)); },
     });
     broadcast();
   }
@@ -135,9 +137,29 @@
   function startClient(code) {
     S.host = false;
     tab.set('session', { code, host: false });
-    S.status = '正在连接房间 ' + code + '…';
+    const say = {
+      signal: '第 1 步：正在连接联机服务…',
+      find: `第 2 步：正在找房间 ${code}…`,
+      open: '已连上房主，正在进入房间…',
+      nosignal: '连不上联机服务（0.peerjs.com）。换个网络试试，比如关掉 VPN 或改用手机热点。正在重试…',
+      noroom: `找不到房间 ${code}。确认房间码没错，并且房主的页面还开着、显示“联机服务已连接”。正在重试…`,
+      blocked: '找到房主了，但两边的网络连不通（公司网、校园网、手机流量常见）。可以让两边连同一个 Wi-Fi 或同一个手机热点再试。正在重试…',
+      unsupported: '这个浏览器不支持联机，请换 Chrome、Edge 或 Safari 打开。',
+    };
+    let failMsg = '';
+    if (S.net) S.net.close();
+    S.status = say.signal;
     render();
     S.net = Net.openClient(code, {
+      onStatus(s) {
+        S.link = s;
+        const bad = !['signal', 'find', 'open'].includes(s);
+        if (S.room) { if (bad) toast(say[s]); return; }
+        if (bad) failMsg = say[s]; else if (s === 'open') failMsg = '';
+        // 重试期间把失败原因留在屏幕上
+        S.status = failMsg || say[s];
+        render();
+      },
       onOpen(api) { api.send({ t: 'hello', pid: S.pid, name: S.name }); },
       onData(msg) {
         if (msg.t === 'state') { S.status = ''; applyView(msg.room, msg.view); }
@@ -146,7 +168,6 @@
         else if (msg.t === 'reject' || msg.t === 'kicked') { toast(msg.msg || '你被房主移出了房间'); leave(); }
       },
       onClose() { toast('和房主断开了，正在重连…'); },
-      onError(m) { if (!S.room) { S.status = m; render(); } },
     });
   }
 
